@@ -31,7 +31,7 @@ class TextNetwork:
         self.num_src_subreddits = len(src_blobs)
         self.num_tgt_subreddits = max(subreddits) + 1
     @classmethod
-    def load(dir_path):
+    def load(cls, dir_path):
         src_blobs_path = "{}/src_blobs.txt".format(dir_path)
         tgt_blobs_path = "{}/tgt_blobs.txt".format(dir_path)
         edges_path = "{}/edges.txt".format(dir_path)

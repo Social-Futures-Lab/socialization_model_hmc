@@ -10,7 +10,7 @@ from numpyro.infer import MCMC, NUTS
 import time
 import numpyro.diagnostics as diagnostics
 import json
-from utils import read2D, read1D, flatten_docs, flatten_docs_ragged, group_by_edge_count, has_edges_bool_mask, build_edge_mask
+from utils import read2D, read1D, flatten_docs, flatten_docs_ragged, group_by_edge_count, has_edges_bool_mask, build_edge_mask, calc_vocab_size
 
 """## Dirichlet over edges per tgt subreddit ##"""
 #TO-DO: add typing
@@ -188,7 +188,7 @@ def gen_model_args(text_network, topics, alpha_sum_topics, alpha_sum_vocab, alph
     src_word_ids, src_doc_ids = flatten_docs_ragged(text_network.src_blobs)
     tgt_word_ids, tgt_doc_ids = flatten_docs_ragged(text_network.tgt_blobs)
     model_args = {
-        "num_topics": num_topics,
+        "num_topics": topics,
         "vocab_size": vocab_size,
         "num_src_subs": len(text_network.src_blobs),
         "num_tgt_docs": len(text_network.tgt_blobs),
@@ -198,19 +198,21 @@ def gen_model_args(text_network, topics, alpha_sum_topics, alpha_sum_vocab, alph
         "tgt_word_ids": tgt_word_ids,
         "src_doc_ids": src_doc_ids,
         "tgt_doc_ids": tgt_doc_ids,
-        "has_edges_mask": has_edges_bool_mask(network.edges),
-        "num_tgt_subs": network.num_tgt_subreddits,
-        "tgt_sub_ids": np.array(network.subreddits),
-        "alpha_topics": np.ones(num_topics) * (alpha_sum_topics/topics),
+        "has_edges_mask": has_edges_bool_mask(text_network.edges),
+        "num_tgt_subs": text_network.num_tgt_subreddits,
+        "tgt_sub_ids": np.array(text_network.subreddits),
+        "alpha_topics": np.ones(topics) * (alpha_sum_topics/topics),
         "alpha_vocab": np.ones(vocab_size)* (alpha_sum_topics/vocab_size),
         "alpha_edges": alpha_edges,
         "lambda_theta": 1,
         "lambda_psi": 1
     }
     if model_name == "gammas_pooled":
-        model_args["adjacency_matrix"] = build_edge_mask(network.edges, num_src_subs), #List of dicts where the items are ("num_edges" -> int, "doc_ids" ->list, "edges" -> 2d mat)
+        #List of dicts where the items are ("num_edges" -> int, "doc_ids" ->list, "edges" -> 2d mat)
+        model_args["adjacency_matrix"] = build_edge_mask(text_network.edges,
+                                                         len(text_network.src_blobs))
     elif model_name == "gammas_unpooled":
-        model_args["doc_edge_lists"] = group_by_edge_count(network.edges)
+        model_args["doc_edge_lists"] = group_by_edge_count(text_network.edges)
         
     return model_args
 
@@ -219,9 +221,10 @@ def run_model(text_network, topics, alpha_sum_topics, alpha_sum_vocab, alpha_edg
         raise ValueError("Unsupported model type")
     model = MODEL_MAP[model_name]
     nuts_kernel = NUTS(model)
-    mcmc = MCMC(nuts_kernel, num_warmup=1000, num_samples=1000)
+    mcmc = MCMC(nuts_kernel, num_warmup=warmup, num_samples=samples)
     rng_key = jr.PRNGKey(96)
-    model_args = gen_model_args(text_network, topics, alpha_sum_topics, alpha_sum_vocab, alpha_edges, samples, warmup, model_name):   
+    model_args = gen_model_args(text_network, topics, alpha_sum_topics, alpha_sum_vocab, alpha_edges, samples, warmup, model_name)
     mcmc.run(rng_key, **model_args)
+    samples = mcmc.get_samples()
     subset_samples = {k: v for k, v in samples.items()}
     return subset_samples

@@ -166,14 +166,14 @@ def build_edge_mask(adj_list, num_src_subs):
 def calc_vocab_size(text_network):
     vocab_size = -1;
     cur_row = 0;
-    for row in src_blobs:
+    for row in text_network.src_blobs:
         if len(row) > 0:
             row_max = max(row)
             vocab_size = max(row_max, vocab_size)
-    for row in tgt_blobs:
+    for row in text_network.tgt_blobs:
         if len(row) > 0:
             row_max = max(row)
             vocab_size = max(row_max, vocab_size)
     vocab_size += 1
-    return calc_vocab_size
+    return vocab_size
 

@@ -22,6 +22,30 @@ def read1D(filename: str) -> list[int]:
         v = [int(x) for line in f for x in line.split()][:size]
     return v
 
+def write1D(filename: str, v: list[int]) -> None:
+    with open(filename, 'w') as f:
+        f.write(f"{len(v)}\n")
+        f.write(" ".join(str(x) for x in v) + "\n")
+
+def write2D(filename: str, v: list[list[int]]) -> None:
+    with open(filename, 'w') as f:
+        f.write(f"{len(v)}\n")
+        for row in v:
+            f.write(f"{len(row)}\n")
+        for row in v:
+            f.write(" ".join(str(x) for x in row) + "\n")
+
+def write3D(filename: str, v: list[list[list[int]]]) -> None:
+    with open(filename, 'w') as f:
+        f.write(f"{len(v)}\n")
+        for matrix in v:
+            f.write(f"{len(matrix)}\n")
+            for row in matrix:
+                f.write(f"{len(row)}\n")
+        for matrix in v:
+            for row in matrix:
+                f.write(" ".join(str(x) for x in row) + "\n")
+
 def flatten_docs(docs):
     """
     docs: np.ndarray of shape (M, L)

@@ -1,3 +1,5 @@
+from utils import read1D, read2D
+
 class TextBlob:
     def _preprocess(self, text):
         return text.lower().split()
@@ -28,3 +30,15 @@ class TextNetwork:
         self.vocab_size = self.compute_vocab_size(src_blobs, tgt_blobs)
         self.num_src_subreddits = len(src_blobs)
         self.num_tgt_subreddits = max(subreddits) + 1
+    @classmethod
+    def load(dir_path):
+        src_blobs_path = "{}/src_blobs.txt".format(dir_path)
+        tgt_blobs_path = "{}/tgt_blobs.txt".format(dir_path)
+        edges_path = "{}/edges.txt".format(dir_path)
+        subreddits_path = "{}/subreddits.txt".format(dir_path)
+        src_blobs = read2D(src_blobs_path)
+        tgt_blobs = read2D(tgt_blobs_path)
+        edges = read2D(edges_path)
+        subreddits = read1D(subreddits_path)
+        return TextNetwork(src_blobs, tgt_blobs, edges, subreddits)
+        

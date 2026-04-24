@@ -22,10 +22,12 @@ def parse_args():
     parser.add_argument("--alpha_sum_topics", type=float, required=True,  help="Alpha sum over topics")
     parser.add_argument("--alpha_edges",      type=float, required=True,  help="Alpha for edges")
     parser.add_argument("--model_name",      type=float, required=True,  help="Either 'gammas_pooled' or 'gammas_unpooled'")
+    parser.add_argument("--device",      type=float, required=True,  help="Either 'cpu' or 'cuda'")
     return parser.parse_args()
     
 if __name__ == "__main__":
     opt = parse_args()
+    numpyro.set_device(opt.device)
     text_network = TextNetwork.load(opt.input_dir)
     samples = run_model(text_network, opt.topics, opt.alpha_sum_topics, opt.alpha_sum_vocab, opt.alpha_edges, opt.samples, opt.warmup, opt.model_name)
     write3D("{}/lambda.txt".format(opts.output_dir), samples["lambda"])

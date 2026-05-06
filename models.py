@@ -10,6 +10,8 @@ from numpyro.infer import MCMC, NUTS
 import time
 import numpyro.diagnostics as diagnostics
 import json
+import pickle
+import os
 from utils import read2D, read1D, flatten_docs, flatten_docs_ragged, group_by_edge_count, has_edges_bool_mask, build_edge_mask, calc_vocab_size
 
 """## Dirichlet over edges per tgt subreddit ##"""
@@ -216,15 +218,77 @@ def gen_model_args(text_network, topics, alpha_sum_topics, alpha_sum_vocab, alph
         
     return model_args
 
-def run_model(text_network, topics, alpha_sum_topics, alpha_sum_vocab, alpha_edges, samples, warmup, model_name):
+def run_model(text_network, topics, alpha_sum_topics, alpha_sum_vocab, alpha_edges, samples, warmup, model_name, checkpoint_dir, checkpoint_interval=10):
     if model_name not in MODEL_MAP:
         raise ValueError("Unsupported model type")
+    
     model = MODEL_MAP[model_name]
     nuts_kernel = NUTS(model)
-    mcmc = MCMC(nuts_kernel, num_warmup=warmup, num_samples=samples)
     rng_key = jr.PRNGKey(96)
     model_args = gen_model_args(text_network, topics, alpha_sum_topics, alpha_sum_vocab, alpha_edges, samples, warmup, model_name)
-    mcmc.run(rng_key, **model_args)
-    samples = mcmc.get_samples()
-    subset_samples = {k: v for k, v in samples.items()}
-    return subset_samples
+    
+    checkpoint_path = os.path.join(checkpoint_dir, "mcmc_checkpoint.pkl")
+    
+    # check if checkpoint exists
+    if os.path.exists(checkpoint_path):
+        print("Resuming from checkpoint...")
+        with open(checkpoint_path, "rb") as f:
+            checkpoint = pickle.load(f)
+        samples_so_far = checkpoint["samples"]
+        last_state = checkpoint["last_state"]
+        samples_remaining = samples - checkpoint["num_samples_collected"]
+        print(f"Resuming with {checkpoint['num_samples_collected']} samples already collected, {samples_remaining} remaining")
+        
+        if samples_remaining <= 0:
+            print("Already have enough samples, returning saved results")
+            return samples_so_far
+        
+        # resume from last state, no warmup needed
+        mcmc = MCMC(nuts_kernel, num_warmup=0, num_samples=samples_remaining)
+        mcmc.post_warmup_state = last_state
+    else:
+        print("Starting fresh run...")
+        samples_so_far = None
+        mcmc = MCMC(nuts_kernel, num_warmup=warmup, num_samples=checkpoint_interval)
+        mcmc.run(rng_key, **model_args)
+        
+        # save initial checkpoint
+        samples_so_far = mcmc.get_samples()
+        last_state = mcmc.last_state
+        with open(checkpoint_path, "wb") as f:
+            pickle.dump({
+                "samples": samples_so_far,
+                "last_state": mcmc.last_state,
+                "num_samples_collected": checkpoint_interval
+            }, f)
+        print(f"Saved checkpoint with {checkpoint_interval} samples")
+        samples_remaining = samples - checkpoint_interval
+
+    # continue sampling in chunks
+    num_collected = checkpoint["num_samples_collected"] if os.path.exists(checkpoint_path) and samples_so_far is not None else checkpoint_interval
+    
+    while samples_remaining > 0:
+        chunk = min(checkpoint_interval, samples_remaining)
+        mcmc = MCMC(nuts_kernel, num_warmup=0, num_samples=chunk)
+        mcmc.post_warmup_state = last_state
+        mcmc.run(last_state.rng_key, **model_args)
+        
+        new_samples = mcmc.get_samples()
+        last_state = mcmc.last_state
+        num_collected += chunk
+        samples_remaining -= chunk
+        
+        # merge samples
+        samples_so_far = {k: jnp.concatenate([samples_so_far[k], new_samples[k]], axis=0) 
+                         for k in samples_so_far}
+        
+        # save checkpoint
+        with open(checkpoint_path, "wb") as f:
+            pickle.dump({
+                "samples": samples_so_far,
+                "last_state": last_state,
+                "num_samples_collected": num_collected
+            }, f)
+        print(f"Saved checkpoint with {num_collected}/{samples} samples")
+    
+    return samples_so_far

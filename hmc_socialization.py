@@ -10,12 +10,14 @@ from text_network import TextNetwork
 from models import run_model
 from utils import write2D, write3D
 import argparse
+import os
 
 def parse_args():
     parser = argparse.ArgumentParser(description="LDA-style topic model configuration")
 
     parser.add_argument("--input_dir",        type=str,   required=True,  help="Input directory path")
     parser.add_argument("--output_dir",       type=str,   required=True,  help="Output directory path")
+    parser.add_argument("--checkpoint_dir",   type=str,   required=True,  help="Checkpoint directory path")
     parser.add_argument("--topics",           type=int,   required=True,  help="Number of topics")
     parser.add_argument("--samples",       type=int,   required=True,  help="Number of samples to collect")
     parser.add_argument("--warmup",     type=int,   required=True,  help="Number of warmup steps")
@@ -28,9 +30,20 @@ def parse_args():
     
 if __name__ == "__main__":
     opt = parse_args()
+    os.makedirs(opt.checkpoint_dir, exist_ok=True)
     numpyro.set_platform(opt.device)
     text_network = TextNetwork.load(opt.input_dir)
-    samples = run_model(text_network, opt.topics, opt.alpha_sum_topics, opt.alpha_sum_vocab, opt.alpha_edges, opt.samples, opt.warmup, opt.model_name)
+    samples = run_model(text_network,
+                        opt.topics,
+                        opt.alpha_sum_topics,
+                        opt.alpha_sum_vocab,
+                        opt.alpha_edges,
+                        opt.samples,
+                        opt.warmup,
+                        opt.model_name,
+                        opt.checkpoint_dir,
+                        checkpoint_interval=10
+              )
     write2D("{}/lambda.txt".format(opt.output_dir), samples["lambda"].tolist())
     write3D("{}/gamma.txt".format(opt.output_dir), samples["gamma"].tolist())        
     write3D("{}/phi.txt".format(opt.output_dir), samples["phi"].tolist())

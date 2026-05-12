@@ -26,6 +26,7 @@ def parse_args():
     parser.add_argument("--alpha_edges",      type=float, required=True,  help="Alpha for edges")
     parser.add_argument("--model_name",      type=str, required=True,  help="Either 'gammas_pooled' or 'gammas_unpooled'")
     parser.add_argument("--device",      type=str, required=True,  help="Either 'cpu' or 'cuda'")
+    parser.add_argument("--num_chains",      type=int, required=True,  help="How many times to run the sampler")
     return parser.parse_args()
     
 if __name__ == "__main__":
@@ -40,12 +41,14 @@ if __name__ == "__main__":
                         opt.alpha_edges,
                         opt.samples,
                         opt.warmup,
+                        opt.num_chains,
                         opt.model_name,
                         opt.checkpoint_dir,
-                        checkpoint_interval=10
+                        checkpoint_interval=100
               )
     write2D("{}/lambda.txt".format(opt.output_dir), samples["lambda"].tolist())
-    write3D("{}/gamma.txt".format(opt.output_dir), samples["gamma"].tolist())        
+    if opt.model_name == "pooled":
+        write3D("{}/gamma.txt".format(opt.output_dir), samples["gamma"].tolist())        
     write3D("{}/phi.txt".format(opt.output_dir), samples["phi"].tolist())
     write3D("{}/theta.txt".format(opt.output_dir), samples["theta"].tolist())
     write3D("{}/psi.txt".format(opt.output_dir), samples["psi"].tolist())

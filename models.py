@@ -11,8 +11,10 @@ import time
 import numpyro.diagnostics as diagnostics
 import json
 import pickle
+import pandas as pd
 import os
 from utils import read2D, read1D, flatten_docs, flatten_docs_ragged, group_by_edge_count, has_edges_bool_mask, build_edge_mask, calc_vocab_size
+import arviz as az
 
 """## Dirichlet over edges per tgt subreddit ##"""
 #TO-DO: add typing
@@ -195,7 +197,7 @@ def gen_model_args(text_network, topics, alpha_sum_topics, alpha_sum_vocab, alph
         "num_src_subs": len(text_network.src_blobs),
         "num_tgt_docs": len(text_network.tgt_blobs),
         "num_src_words": sum([len(src_blob) for src_blob in text_network.src_blobs]),
-        "num_tgt_words": sum([len(src_blob) for src_blob in text_network.tgt_blobs]),
+        "num_tgt_words": sum([len(tgt_blob) for tgt_blob in text_network.tgt_blobs]),
         "src_word_ids": src_word_ids,
         "tgt_word_ids": tgt_word_ids,
         "src_doc_ids": src_doc_ids,
@@ -218,77 +220,57 @@ def gen_model_args(text_network, topics, alpha_sum_topics, alpha_sum_vocab, alph
         
     return model_args
 
-def run_model(text_network, topics, alpha_sum_topics, alpha_sum_vocab, alpha_edges, samples, warmup, model_name, checkpoint_dir, checkpoint_interval=10):
+def run_model(text_network, topics, alpha_sum_topics, alpha_sum_vocab, alpha_edges, samples, warmup, num_chains, model_name, checkpoint_dir, checkpoint_interval=10):
     if model_name not in MODEL_MAP:
         raise ValueError("Unsupported model type")
-    
+
     model = MODEL_MAP[model_name]
     nuts_kernel = NUTS(model)
-    rng_key = jr.PRNGKey(96)
     model_args = gen_model_args(text_network, topics, alpha_sum_topics, alpha_sum_vocab, alpha_edges, samples, warmup, model_name)
-    
-    checkpoint_path = os.path.join(checkpoint_dir, "mcmc_checkpoint.pkl")
-    
-    # check if checkpoint exists
-    if os.path.exists(checkpoint_path):
-        print("Resuming from checkpoint...")
-        with open(checkpoint_path, "rb") as f:
-            checkpoint = pickle.load(f)
-        samples_so_far = checkpoint["samples"]
-        last_state = checkpoint["last_state"]
-        samples_remaining = samples - checkpoint["num_samples_collected"]
-        print(f"Resuming with {checkpoint['num_samples_collected']} samples already collected, {samples_remaining} remaining")
-        
-        if samples_remaining <= 0:
-            print("Already have enough samples, returning saved results")
-            return samples_so_far
-        
-        # resume from last state, no warmup needed
-        mcmc = MCMC(nuts_kernel, num_warmup=0, num_samples=samples_remaining)
-        mcmc.post_warmup_state = last_state
-    else:
-        print("Starting fresh run...")
-        samples_so_far = None
-        mcmc = MCMC(nuts_kernel, num_warmup=warmup, num_samples=checkpoint_interval)
-        mcmc.run(rng_key, **model_args)
-        
-        # save initial checkpoint
-        samples_so_far = mcmc.get_samples()
-        last_state = mcmc.last_state
-        with open(checkpoint_path, "wb") as f:
-            pickle.dump({
-                "samples": samples_so_far,
-                "last_state": mcmc.last_state,
-                "num_samples_collected": checkpoint_interval
-            }, f)
-        print(f"Saved checkpoint with {checkpoint_interval} samples")
-        samples_remaining = samples - checkpoint_interval
+ #   checkpoint_path = os.path.join(checkpoint_dir, "mcmc_checkpoint.pkl")
 
-    # continue sampling in chunks
-    num_collected = checkpoint["num_samples_collected"] if os.path.exists(checkpoint_path) and samples_so_far is not None else checkpoint_interval
-    
-    while samples_remaining > 0:
-        chunk = min(checkpoint_interval, samples_remaining)
-        mcmc = MCMC(nuts_kernel, num_warmup=0, num_samples=chunk)
-        mcmc.post_warmup_state = last_state
-        mcmc.run(last_state.rng_key, **model_args)
-        
-        new_samples = mcmc.get_samples()
-        last_state = mcmc.last_state
-        num_collected += chunk
-        samples_remaining -= chunk
-        
-        # merge samples
-        samples_so_far = {k: jnp.concatenate([samples_so_far[k], new_samples[k]], axis=0) 
-                         for k in samples_so_far}
-        
-        # save checkpoint
-        with open(checkpoint_path, "wb") as f:
-            pickle.dump({
-                "samples": samples_so_far,
-                "last_state": last_state,
-                "num_samples_collected": num_collected
-            }, f)
-        print(f"Saved checkpoint with {num_collected}/{samples} samples")
-    
+    # load checkpoint or run warmup
+ #   if os.path.exists(checkpoint_path):
+ #       print("Resuming from checkpoint...")
+ #       with open(checkpoint_path, "rb") as f:
+ #           checkpoint = pickle.load(f)
+ #       samples_so_far = checkpoint["samples"]
+ #       last_state = checkpoint["last_state"]
+ #       num_collected = checkpoint["num_samples_collected"]
+ #   else:
+    print("Starting fresh run, running warmup...")
+    mcmc = MCMC(nuts_kernel, num_warmup=warmup, num_samples=samples, num_chains=num_chains)
+    mcmc.run(jr.PRNGKey(96), **model_args)
+    samples_so_far = mcmc.get_samples(group_by_chain=True)
+  #  last_state = mcmc.last_state
+    #num_collected = checkpoint_interval
+    #with open(checkpoint_path, "wb") as f:
+    #    pickle.dump({"samples": samples_so_far, "last_state": last_state, "num_samples_collected": num_collected}, f)
+  #  print(f"Warmup done, saved checkpoint with {num_collected} samples")
+
+   # # sample in chunks
+   # while num_collected < samples:
+   #     chunk = min(checkpoint_interval, samples - num_collected)
+   #     print(f"Sampling chunk of {chunk}, {num_collected}/{samples} collected so far...")
+   #     mcmc = MCMC(nuts_kernel, num_warmup=0, num_chains=2, num_samples=chunk)
+   #     mcmc.post_warmup_state = last_state
+   #     mcmc.run(last_state.rng_key, **model_args)
+   #     new_samples = mcmc.get_samples()
+   #     last_state = mcmc.last_state
+   #     num_collected += chunk
+    samples_so_far = {k: samples_so_far[k] for k in samples_so_far}
+    print("Printing Lambda draws...")
+    for sub in range(0,9):
+        print("~~~~~~~~~~~~~~~~~")
+        print("Subreddit: {}".format(sub))
+        for chain in range(0, 2):
+            print("~~")
+            print("Chain {}".format(chain))
+            print(samples_so_far["lambda"][chain, :, sub])
+
+   #     with open(checkpoint_path, "wb") as f:
+   #         pickle.dump({"samples": samples_so_far, "last_state": last_state, "num_samples_collected": num_collected}, f)
+   #     print(f"Saved checkpoint with {num_collected}/{samples} samples")
+  #  subset_samples = {k: v for k,v in samples_so_far.items() if k in ["lambda", "gamma", "theta", "psi"]}
+    mcmc.print_summary()
     return samples_so_far

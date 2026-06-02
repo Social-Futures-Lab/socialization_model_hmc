@@ -8,7 +8,7 @@ import numpy as np
 import random
 from text_network import TextNetwork
 from models import run_model
-from utils import write2D, write3D
+from utils import write1D, write2D, write3D
 import argparse
 import os
 
@@ -46,9 +46,11 @@ if __name__ == "__main__":
                         opt.checkpoint_dir,
                         checkpoint_interval=100
               )
-    write2D("{}/lambda.txt".format(opt.output_dir), samples["lambda"].tolist())
-    if opt.model_name == "pooled":
-        write3D("{}/gamma.txt".format(opt.output_dir), samples["gamma"].tolist())        
-    write3D("{}/phi.txt".format(opt.output_dir), samples["phi"].tolist())
-    write3D("{}/theta.txt".format(opt.output_dir), samples["theta"].tolist())
-    write3D("{}/psi.txt".format(opt.output_dir), samples["psi"].tolist())
+    #write1D("{}/lambda.txt".format(opt.output_dir), samples["lambda"][:, 0].tolist())
+    #write1D("{}/log_probs.txt".format(opt.output_dir), samples["log_prob"].tolist())
+    #if opt.model_name == "pooled":
+    #    write2D("{}/gamma.txt".format(opt.output_dir), samples["gamma"][:, 0, :].tolist())        
+    #if opt.model_name != "no_topics":
+    #    write2D("{}/phi.txt".format(opt.output_dir), samples["phi"][:, 1, :].tolist())
+    #write3D("{}/theta.txt".format(opt.output_dir), samples["theta"].tolist())
+    #write2D("{}/psi.txt".format(opt.output_dir), samples["psi"][:, 1, :].tolist())

@@ -86,7 +86,6 @@ def flatten_docs_ragged(docs):
 
     w   = np.concatenate(int_docs).astype(int)
     doc = np.repeat(np.arange(len(docs)), [len(row) for row in int_docs])
-
     return w, doc
 
 

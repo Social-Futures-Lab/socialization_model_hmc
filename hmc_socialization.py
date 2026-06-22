@@ -7,7 +7,7 @@ import json
 import numpy as np
 import random
 from text_network import TextNetwork
-from models import run_model
+from pymc_models import run_model
 from utils import write1D, write2D, write3D
 import argparse
 import os
@@ -24,7 +24,7 @@ def parse_args():
     parser.add_argument("--alpha_sum_vocab",  type=float, required=True,  help="Alpha sum over vocabulary")
     parser.add_argument("--alpha_sum_topics", type=float, required=True,  help="Alpha sum over topics")
     parser.add_argument("--alpha_edges",      type=float, required=True,  help="Alpha for edges")
-    parser.add_argument("--model_name",      type=str, required=True,  help="Either 'gammas_pooled' or 'gammas_unpooled'")
+    parser.add_argument("--model_name",      type=str, required=True,  help="Either 'gammas_pooled', 'gammas_unpooled', 'no_topics', or 'no_topics_multinomial'")
     parser.add_argument("--device",      type=str, required=True,  help="Either 'cpu' or 'cuda'")
     parser.add_argument("--num_chains",      type=int, required=True,  help="How many times to run the sampler")
     return parser.parse_args()
@@ -46,11 +46,3 @@ if __name__ == "__main__":
                         opt.checkpoint_dir,
                         checkpoint_interval=100
               )
-    #write1D("{}/lambda.txt".format(opt.output_dir), samples["lambda"][:, 0].tolist())
-    #write1D("{}/log_probs.txt".format(opt.output_dir), samples["log_prob"].tolist())
-    #if opt.model_name == "pooled":
-    #    write2D("{}/gamma.txt".format(opt.output_dir), samples["gamma"][:, 0, :].tolist())        
-    #if opt.model_name != "no_topics":
-    #    write2D("{}/phi.txt".format(opt.output_dir), samples["phi"][:, 1, :].tolist())
-    #write3D("{}/theta.txt".format(opt.output_dir), samples["theta"].tolist())
-    #write2D("{}/psi.txt".format(opt.output_dir), samples["psi"][:, 1, :].tolist())

@@ -559,63 +559,10 @@ def run_model(text_network, topics, alpha_sum_topics, alpha_sum_vocab, alpha_edg
     #print(az.summary(inf_data, var_names = ["^lambda*"], filter_vars="regex"))
     print(az.summary(inf_data, var_names = ["^gamma*"], filter_vars="regex"))
     print("TIME: ", time.time() - start)
+    return {k: v for k,v in mcmc.get_samples(group_by_chain = True).items() if k in ["gamma_mean", "gamma_var", "gamma"]}
     #samples_so_far = mcmc.get_samples(group_by_chain=True)
     
     #psi3 = np.asarray(jnp.mean(nn.softmax(samples_so_far["logits_psi"][0,:,3,:]), axis=0))
-    #psi8 = np.asarray(jnp.mean(nn.softmax(samples_so_far["logits_psi"][0,:,8,:]), axis=0))
-    #theta0 = np.asarray(jnp.mean(nn.softmax(samples_so_far["logits_theta"][0,:,0,:]), axis=0))
-    #theta36 = np.asarray(jnp.mean(nn.softmax(samples_so_far["logits_theta"][0,:,36,:]), axis=0))
-    #theta47 = np.asarray(jnp.mean(nn.softmax(samples_so_far["logits_theta"][0,:,47,:]), axis=0))
-    #theta168 = np.asarray(jnp.mean(nn.softmax(samples_so_far["logits_theta"][0,:,168,:]), axis=0))
-    
-    #from numpy.linalg import norm
-
-    #pairs = {
-    #    "psi3": psi3,
-    #    "psi8": psi8,
-    #}
-
-    #thetas = {
-    #    "theta0": theta0,
-    #    "theta36": theta36,
-    #    "theta47": theta47,
-    #    "theta168": theta168,
-    #}
-
-    #for psi_name, psi_vec in pairs.items():
-    #    for theta_name, theta_vec in thetas.items():
-    #        cos_sim = np.dot(psi_vec, theta_vec) / (norm(psi_vec) * norm(theta_vec))
-    #        print(f"cos_sim({psi_name}, {theta_name}) = {cos_sim:.4f}")    
-
-    #mcmc.print_summary()
-
-   # last_state = mcmc.last_state
-   # num_collected = checkpoint_interval
-   # with open(checkpoint_path, "wb") as f:
-  #      pickle.dump({"samples": samples_so_far, "last_state": last_state, "num_samples_collected": num_collected}, f)
-  #  print(f"Warmup done, saved checkpoint with {num_collected} samples")
-
-    # sample in chunks
-   # while num_collected < samples:
-   #     chunk = min(checkpoint_interval, samples - num_collected)
-   #     print(f"Sampling chunk of {chunk}, {num_collected}/{samples} collected so far...")
-   #     mcmc = MCMC(nuts_kernel, num_warmup=0, num_chains=num_chains, num_samples=chunk)
-   #     mcmc.post_warmup_state = last_state
-   #     mcmc.run(mcmc.post_warmup_state.rng_key, **model_args)
-   #     new_samples = mcmc.get_samples()
-   #     last_state = mcmc.last_state
-   #     num_collected += chunk
-   #     samples_so_far = {k: jnp.concatenate([samples_so_far[k], new_samples[k]], axis=0)
-   #                       for k in samples_so_far}
-   #     with open(checkpoint_path, "wb") as f:
-   #         pickle.dump({"samples": samples_so_far, "last_state": last_state, "num_samples_collected": num_collected}, f)
-   #     print(f"Saved checkpoint with {num_collected}/{samples} samples")
-    
-    #samples_so_far = {k: jnp.expand_dims(samples_so_far[k], axis=0) for k in samples_so_far}
-    #samples_so_far = {k: samples_so_far[k] for k in samples_so_far}
-    #samples_so_far["log_prob"] = log_prob
-#    print(samples_so_far["lambda"][0, :10, 0])
-   # samples_so_far = {k: np.asarray(samples_so_far[k]) for k in samples_so_far}
 #    subset_samples = {k: v.reshape(-1, *v.shape[2:]) for k,v in samples_so_far.items() if k in ["lambda", "gamma", "theta", "psi", "phi", "log_prob"]}
  #   return subset_samples
  #   return samples_so_far

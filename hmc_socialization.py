@@ -46,3 +46,5 @@ if __name__ == "__main__":
                         opt.checkpoint_dir,
                         checkpoint_interval=100
               )
+    with open(opt.output_dir) as f:
+        f.write(json.dumps(samples))

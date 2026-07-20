@@ -559,7 +559,12 @@ def run_model(text_network, topics, alpha_sum_topics, alpha_sum_vocab, alpha_edg
     #print(az.summary(inf_data, var_names = ["^lambda*"], filter_vars="regex"))
     print(az.summary(inf_data, var_names = ["^gamma*"], filter_vars="regex"))
     print("TIME: ", time.time() - start)
-    return {k: v for k,v in mcmc.get_samples(group_by_chain = True).items() if k in ["gamma_mean", "gamma_var", "gamma"]}
+    raw_samples = {
+        k: v for k, v in mcmc.get_samples(group_by_chain=True).items()
+        if k in ["gamma_mean", "gamma_var", "gamma"]
+    }
+    # Convert JAX arrays -> NumPy so they're safe to np.savez
+    return {k: np.asarray(v) for k, v in raw_samples.items()}
     #samples_so_far = mcmc.get_samples(group_by_chain=True)
     
     #psi3 = np.asarray(jnp.mean(nn.softmax(samples_so_far["logits_psi"][0,:,3,:]), axis=0))

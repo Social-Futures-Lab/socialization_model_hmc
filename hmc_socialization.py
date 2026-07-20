@@ -7,7 +7,7 @@ import json
 import numpy as np
 import random
 from text_network import TextNetwork
-from pymc_models import run_model
+from models import run_model
 from utils import write1D, write2D, write3D
 import argparse
 import os

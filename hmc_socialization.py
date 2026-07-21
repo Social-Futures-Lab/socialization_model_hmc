@@ -39,3 +39,4 @@ if __name__ == "__main__":
                         checkpoint_dir = opt.checkpoint_dir,
                         checkpoint_interval= opt.checkpoint_interval
               )
+    np.savez_compressed(opt.output_dir + "/parameters.npz", **samples)

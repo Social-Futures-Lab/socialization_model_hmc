@@ -677,4 +677,15 @@ def run_model(text_network, samples, warmup, num_chains, model_name, checkpoint_
     plt.savefig("trace.pdf", format="pdf", bbox_inches="tight")
     plt.close(fig)
     print("TIME: ", time.time() - start)
+    raw_samples = {
+        k: v for k, v in mcmc.get_samples(group_by_chain=True).items()
+        if k in ["gamma_mean", "gamma_var", "gamma"]
+    }
+    # Convert JAX arrays -> NumPy so they're safe to np.savez
+    return {k: np.asarray(v) for k, v in raw_samples.items()}
+    #samples_so_far = mcmc.get_samples(group_by_chain=True)
     
+    #psi3 = np.asarray(jnp.mean(nn.softmax(samples_so_far["logits_psi"][0,:,3,:]), axis=0))
+#    subset_samples = {k: v.reshape(-1, *v.shape[2:]) for k,v in samples_so_far.items() if k in ["lambda", "gamma", "theta", "psi", "phi", "log_prob"]}
+ #   return subset_samples
+ #   return samples_so_far

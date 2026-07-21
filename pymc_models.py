@@ -97,9 +97,9 @@ def build_pymc_model(
         # ---- ragged pair-gammas with per-tgt-sub mean ----
 #        gamma_mean_mean = pm.Normal("gamma_mean_mean", 0.0, 1.0)
         gamma_mean = pm.Normal("gamma_mean", 0.0, 1.0, shape=(num_tgt_subs,))
-        gamma_var  = pm.HalfNormal("gamma_var", 1.0, shape=(num_tgt_subs,))
+        gamma_var  = pm.HalfNormal("gamma_var", 1.0)
         gamma_z    = pm.Normal("gammas", 0.0, 1.0, shape=(total_pairs,))
-        gammas = gamma_mean[pair_owner] + gamma_var[pair_owner] * gamma_z         # (total_pairs,)
+        gammas = gamma_mean[pair_owner] + gamma_var*gamma_z         # (total_pairs,)
 
         # ---- build per-doc mixture log-probs ----
         log_mix = pt.full((num_tgt_docs, vocab_size), -np.inf, dtype="float32")

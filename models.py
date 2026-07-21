@@ -1,3 +1,4 @@
+import jax
 import jax.numpy as jnp
 import jax.nn as nn
 import jax.random as jr
@@ -7,6 +8,7 @@ from jax.scipy.special import logsumexp
 import json
 import numpy as np
 import random
+from scipy.special import logit
 from numpyro.infer import MCMC, NUTS
 import time
 import numpyro.diagnostics as diagnostics
@@ -16,8 +18,61 @@ import pandas as pd
 import os
 from utils import read2D, read1D, flatten_docs, flatten_docs_ragged, group_by_edge_count, has_edges_bool_mask, build_edge_mask, calc_vocab_size
 import arviz as az
+import matplotlib.pyplot as plt
 
 DROP_SITES = {"logits_theta", "logits_psi"}
+
+def inverse_softmax_pinned(p):
+    p = np.asarray(p, dtype=float)
+    x = np.log(p) - np.log(p[-1])
+    x[-1] = 0.0  # exact, avoids any floating point residue
+    return x
+
+def kneser_ney_unigram_freqs(sequences, V, discount=None):
+    """
+    Compute Kneser-Ney (absolute discounting) smoothed unigram frequencies.
+
+    Args:
+        sequences: 2D array-like of token ids (list of lists, or ragged/rectangular array).
+                   Values are ints in [0, V).
+        V: vocabulary size.
+        discount: discount value D in [0, 1). If None, estimated from the data
+                  via the standard Good-Turing-style heuristic:
+                  D = n1 / (n1 + 2*n2)
+
+    Returns:
+        np.ndarray of shape (V,), summing to 1, giving smoothed token probabilities.
+    """
+    # Flatten and count occurrences of each token
+    counts = np.zeros(V, dtype=np.int64)
+    for row in sequences:
+        row = np.asarray(row, dtype=np.int64)
+        counts += np.bincount(row, minlength=V)
+
+    N = counts.sum()
+    if N == 0:
+        raise ValueError("No tokens found in input sequences.")
+
+    # Estimate discount if not provided
+    if discount is None:
+        n1 = np.sum(counts == 1)
+        n2 = np.sum(counts == 2)
+        discount = n1 / (n1 + 2 * n2) if (n1 + 2 * n2) > 0 else 0.75
+    if not (0 <= discount < 1):
+        raise ValueError("discount must be in [0, 1).")
+
+    # Number of distinct token types actually observed (count > 0)
+    n_types = np.sum(counts > 0)
+
+    # Discount the observed counts
+    discounted_counts = np.maximum(counts - discount, 0)
+
+    # Freed-up probability mass, redistributed uniformly over all V tokens
+    leftover_mass = discount * n_types
+
+    probs = discounted_counts / N + (leftover_mass / N) * (1.0 / V)
+
+    return probs
 
 class FilteredNUTS(NUTS):
     """NUTS that omits large nuisance sites from the collected samples.
@@ -167,29 +222,32 @@ def collapse_to_counts(doc_ids, word_ids, vocab_size):
     return uniq_doc, uniq_word, counts.astype(np.float32)
 
 def model_no_topics_multinomial(
-    vocab_size, num_src_subs, num_tgt_docs, num_tgt_subs,
+    src_blobs, vocab_size, num_src_subs, num_tgt_docs, num_tgt_subs,
     src_sub_ids, src_word_ids, src_counts,
     tgt_doc_ids, tgt_word_ids, tgt_counts,
     tgt_sub_ids, doc_edge_lists, has_edges_mask,
     edges_per_sub, local_edge_map):
 
-    word_mean = numpyro.sample("mean", dist.Normal(0, 1).expand([1, vocab_size - 1]))
-    word_var  = numpyro.sample("variance", dist.HalfNormal(1))
+    V1 = vocab_size - 1
+    R  = num_tgt_subs
 
-    logits_psi = numpyro.sample("logits_psi",
-        dist.Normal(jnp.zeros((num_tgt_subs, vocab_size - 1)),
-                    jnp.ones((num_tgt_subs, vocab_size - 1))))
-    logits_psi = jnp.concatenate([word_mean + (logits_psi * word_var),
-                                  jnp.zeros((num_tgt_subs, 1))], axis=1)
+    # --- universal language distribution (your learned-mu version) ---
+    # data-pinned by the whole corpus, so a wide prior is fine; last logit pinned to 0
+    mu = numpyro.sample("word_mean", dist.Normal(0.0, 1.0).expand([V1]))
+    var = numpyro.sample("word_var", dist.Normal(0, 1))
 
-    logits_theta = numpyro.sample("logits_theta",
-        dist.Normal(jnp.zeros((num_src_subs, vocab_size - 1)),
-                    jnp.ones((num_src_subs, vocab_size - 1))))
-    logits_theta = jnp.concatenate([word_mean + (logits_theta * word_var),
-                                    jnp.zeros((num_src_subs, 1))], axis=1)
+    # non-centered deviations (this replaces logits_psi * word_var)
+    z_psi = numpyro.sample("z_psi", dist.Normal(0, 1).expand([R, V1]))
+    z_theta = numpyro.sample("z_theta", dist.Normal(0, 1).expand([num_src_subs, V1]))
+    
+    delta_tgt = z_psi * var
+    delta_src = z_theta * var
 
+    logits_psi = jnp.concatenate([mu+delta_tgt, jnp.zeros((R, 1))], axis=1)
+    log_psi_full = nn.log_softmax(logits_psi, axis=-1)
+    
+    logits_theta = jnp.concatenate([mu+delta_src, jnp.zeros((num_src_subs, 1))], axis=1)
     log_theta_full = nn.log_softmax(logits_theta, axis=-1)
-    log_psi_full   = nn.log_softmax(logits_psi,   axis=-1)
 
     log_mix = jnp.full((num_tgt_docs, vocab_size), -jnp.inf)
 
@@ -198,18 +256,24 @@ def model_no_topics_multinomial(
     total_pairs = int(np.asarray(edges_per_sub).sum())                     # static
     offsets = jnp.concatenate([jnp.zeros((1,), dtype=jnp.int32),
                                jnp.cumsum(edges_per_sub_flat)[:-1].astype(jnp.int32)])
-
+    _, pair_srcs = np.where(local_edge_map >= 0)
     # per-tgt-sub citation-propensity mean (the lambda analog)
-    gamma_mean = numpyro.sample("gamma_mean", dist.Normal(0, 1).expand([num_tgt_subs]))
-    gamma_var  = numpyro.sample("gamma_var",  dist.HalfNormal(1))
-    gamma_z    = numpyro.sample("gammas", dist.Normal(0, 1).expand([total_pairs]))  # deviations
-
+    gamma_mean_tgt = numpyro.sample("gamma_mean", dist.Normal(0, 1).expand([num_tgt_subs]))
+    gamma_mean_src = numpyro.sample("gamma_mean_src", dist.Normal(0, 1).expand([num_src_subs]))
     # map each flat pair-slot to its owning tgt sub, so we can add that sub's mean
     # pair_owner[p] = which tgt sub owns flat slot p
     pair_owner = jnp.repeat(jnp.arange(num_tgt_subs), edges_per_sub_flat,
                             total_repeat_length=total_pairs)               # (total_pairs,)
-    gammas = gamma_mean[pair_owner] + gamma_var * gamma_z                  # (total_pairs,)
-
+    
+    tau_gamma = numpyro.sample("tau_gamma", dist.FoldedDistribution(dist.StudentT(loc=0, scale=0.5, df=2)))
+    lam_gamma = numpyro.sample("lam_gamma", dist.FoldedDistribution(dist.StudentT(loc=0, scale=1, df=5).expand([total_pairs])))
+    c2_gamma = numpyro.sample("c2_gamma", dist.InverseGamma(1, 1))
+    lam_tilde2_gamma = (c2_gamma * lam_gamma**2) / (c2_gamma + (tau_gamma**2) * (lam_gamma**2))
+    z_gamma = numpyro.sample("z_gamma", dist.Normal(0.0, 1.0).expand([total_pairs]))
+    delta_gamma = z_gamma * jnp.sqrt(lam_tilde2_gamma) * tau_gamma
+ #   delta_gamma = z_gamma * gamma_var
+    gammas = gamma_mean_tgt[pair_owner] + gamma_mean_src[pair_srcs]  + delta_gamma
+  
     for edge_obj in doc_edge_lists:
         num_edges     = edge_obj["num_edges"]
         edges         = edge_obj["edges"]
@@ -220,7 +284,6 @@ def model_no_topics_multinomial(
         local    = local_edge_map[t[:, None], edges]                       # (num_edge_docs, num_edges)
         pair_pos = offsets[t][:, None] + local                            # (num_edge_docs, num_edges)
         logit_gamma_src = gammas[pair_pos]                                # (num_edge_docs, num_edges)
-
         logit_gamma = jnp.concatenate(
             [jnp.zeros((num_edge_docs, 1)), logit_gamma_src], axis=1)
         log_gamma = nn.log_softmax(logit_gamma, axis=-1)
@@ -234,6 +297,7 @@ def model_no_topics_multinomial(
     no_edge = ~has_edges_mask
     log_mix = jnp.where(no_edge[:, None], log_psi_full[tgt_sub_ids, :], log_mix)
 
+
     tgt_pair_ll = log_mix[tgt_doc_ids, tgt_word_ids]
     src_pair_ll = log_theta_full[src_sub_ids, src_word_ids]
 
@@ -242,7 +306,7 @@ def model_no_topics_multinomial(
     with numpyro.plate("tgt_pairs", tgt_counts.shape[0]):
         numpyro.factor("tgt_likelihood", tgt_counts * tgt_pair_ll)
 
-def model_no_topics(vocab_size, num_src_subs, num_tgt_docs, num_tgt_subs, num_src_words,
+def model_no_topics(src_blobs, vocab_size, num_src_subs, num_tgt_docs, num_tgt_subs, num_src_words,
                     num_tgt_words, src_word_ids, tgt_word_ids, src_doc_ids, tgt_doc_ids, tgt_sub_ids,
                     doc_edge_lists, has_edges_mask, alpha_vocab, alpha_edges, lambda_theta, lambda_psi):
     """
@@ -471,7 +535,6 @@ def gen_model_args(text_network, topics, alpha_sum_topics, alpha_sum_vocab, alph
     src_word_ids, src_doc_ids = flatten_docs_ragged(text_network.src_blobs)
     tgt_word_ids, tgt_doc_ids = flatten_docs_ragged(text_network.tgt_blobs)
     model_args = {
-        "num_topics": topics,
         "vocab_size": vocab_size,
         "num_src_subs": len(text_network.src_blobs),
         "num_tgt_docs": len(text_network.tgt_blobs),
@@ -484,12 +547,14 @@ def gen_model_args(text_network, topics, alpha_sum_topics, alpha_sum_vocab, alph
         "has_edges_mask": has_edges_bool_mask(text_network.edges),
         "num_tgt_subs": text_network.num_tgt_subreddits,
         "tgt_sub_ids": np.array(text_network.subreddits),
-        "alpha_topics": np.ones(topics) * (alpha_sum_topics/topics),
-        "alpha_vocab": np.ones(vocab_size)* (alpha_sum_vocab/vocab_size),
-        "alpha_edges": alpha_edges,
-        "lambda_theta": 1,
-        "lambda_psi": 1
     }
+    if topics != None:
+        model_args["num_topics"] = topics,
+        model_args["alpha_topics"] = np.ones(topics) * (alpha_sum_topics/topics),
+        model_args["alpha_vocab"] = np.ones(vocab_size)* (alpha_sum_vocab/vocab_size),
+        model_args["alpha_edges"] = alpha_edges,
+        model_args["lambda_theta"] = 1,
+        model_args["lambda_psi"] = 1
     if model_name == "gammas_pooled":
         #List of dicts where the items are ("num_edges" -> int, "doc_ids" ->list, "edges" -> 2d mat)
         model_args["adjacency_matrix"] = build_edge_mask(text_network.edges,
@@ -509,18 +574,14 @@ def gen_model_args(text_network, topics, alpha_sum_topics, alpha_sum_vocab, alph
         model_args["tgt_word_ids"] = tgt_word_ids_u
         model_args["tgt_counts"] = tgt_counts
         model_args["edges_per_sub"], model_args["local_edge_map"] = build_tgt_sub_edge_maps(text_network.edges, text_network.subreddits, model_args["num_tgt_subs"], model_args["num_src_subs"])
+        model_args["src_blobs"] = text_network.src_blobs
         del model_args["src_doc_ids"]
-        del model_args["num_topics"]
-        del model_args["alpha_topics"]
-        del model_args["alpha_vocab"]
-        del model_args["alpha_edges"]
-        del model_args["lambda_theta"]
-        del model_args["lambda_psi"]
         del model_args["num_tgt_words"]
         del model_args["num_src_words"]
     return model_args
 
-def run_model(text_network, topics, alpha_sum_topics, alpha_sum_vocab, alpha_edges, samples, warmup, num_chains, model_name, checkpoint_dir, checkpoint_interval=10):
+def run_model(text_network, samples, warmup, num_chains, model_name, checkpoint_dir, checkpoint_interval,
+              topics=None, alpha_sum_topics=None, alpha_sum_vocab=None, alpha_edges=None):
     
     start = time.time()
     pd.set_option('display.max_columns', None)
@@ -532,90 +593,88 @@ def run_model(text_network, topics, alpha_sum_topics, alpha_sum_vocab, alpha_edg
         raise ValueError("Unsupported model type")
 
     model = MODEL_MAP[model_name]
-    nuts_kernel = FilteredNUTS(model, dense_mass=[("gamma_mean", "gamma_var")], max_tree_depth=12)
+    
     model_args = gen_model_args(text_network, topics, alpha_sum_topics, alpha_sum_vocab, alpha_edges, samples, warmup, model_name)
+    vocab_size = model_args["vocab_size"]
+    num_src_subs = model_args["num_src_subs"]
+    num_tgt_subs = model_args["num_tgt_subs"]
+    src_freqs = []
+    for i in range(num_src_subs):
+        src_freqs.append(kneser_ney_unigram_freqs(np.expand_dims(text_network.src_blobs[i], axis=0), vocab_size))
+    tgt_freqs = []
+    for j in range(num_tgt_subs):
+        cur_blobs = []
+        for index, i in enumerate(text_network.subreddits):
+            if i == j:
+                cur_blobs.append(text_network.tgt_blobs[index])
+        tgt_freqs.append(kneser_ney_unigram_freqs(cur_blobs, vocab_size))
+    
+    src_freqs = np.array([inverse_softmax_pinned(p) for p in src_freqs])
+    src_freqs = src_freqs[:, :-1]
+    tgt_freqs = np.array([inverse_softmax_pinned(p) for p in tgt_freqs])
+    tgt_freqs = tgt_freqs[:, :-1]
+
+    init_values = {
+        "logits_psi": tgt_freqs,
+        "logits_theta": src_freqs
+    }
+    init_strategy = numpyro.infer.init_to_value(values = init_values)
+    kernel = FilteredNUTS(model, max_tree_depth=12, init_strategy= init_strategy)
+ #   kernel = NUTS(model, max_tree_depth=12, init_strategy= init_strategy)
+    total = warmup + samples
     checkpoint_path = os.path.join(checkpoint_dir, "mcmc_checkpoint.pkl")
 
-    # load checkpoint or run warmup
- #   if os.path.exists(checkpoint_path):
- #       print("Resuming from checkpoint...")
-  #      with open(checkpoint_path, "rb") as f:
-  #          checkpoint = pickle.load(f)
-  #      samples_so_far = checkpoint["samples"]
-  #      last_state = checkpoint["last_state"]
-  #      num_collected = checkpoint["num_samples_collected"]
-  #  else:
-    print("Starting fresh run, running warmup...")
-    #mcmc = MCMC(nuts_kernel, num_warmup=warmup, num_samples=checkpoint_interval, num_chains=num_chains)
-    mcmc = MCMC(nuts_kernel, num_warmup=warmup, num_samples=samples, num_chains=num_chains)
-    mcmc.run(jr.PRNGKey(11), **model_args, extra_fields=("num_steps", "diverging", "adapt_state.step_size"))
- 
+    if os.path.exists(checkpoint_path):
+        with open(checkpoint_path, "rb") as f:
+            ck = pickle.load(f)
+        last_state, samples_so_far, steps_done = ck["state"], ck["samples"], ck["steps_done"]
+        print(f"Resuming at step {steps_done}/{total}")
+    else:
+        # replaces the atomic warmup run: build the step-0 state directly (cheap)
+        keys = jr.split(jr.PRNGKey(11), num_chains)
+        states = [kernel.init(k, warmup, model_args=(), model_kwargs=model_args) for k in keys]
+        last_state = jax.tree.map(lambda *xs: jnp.stack(xs), *states)
+        samples_so_far, steps_done = None, 0
+
+    # ONE object, reused across chunks (avoids per-chunk recompiles);
+    # num_warmup=warmup is the critical change vs your num_warmup=0
+    mcmc = MCMC(kernel, num_warmup=warmup, num_samples=checkpoint_interval,
+                num_chains=num_chains)
+
+    while steps_done < total:
+        chunk = min(checkpoint_interval, total - steps_done)
+        if chunk != mcmc.num_samples:   # final partial chunk only
+            mcmc = MCMC(kernel, num_warmup=warmup, num_samples=chunk, num_chains=num_chains)
+        mcmc.post_warmup_state = last_state
+        mcmc.run(last_state.rng_key, **model_args,
+                 extra_fields=("num_steps", "diverging", "adapt_state.step_size"))
+        last_state = mcmc.last_state
+        new = mcmc.get_samples(group_by_chain=True)
+
+        # keep only draws whose global step index exceeds warmup
+        keep = min(chunk, max(0, steps_done + chunk - warmup))
+        if keep:
+            kept = {k: np.asarray(v[:, -keep:]) for k, v in new.items()}
+            samples_so_far = kept if samples_so_far is None else \
+                {k: np.concatenate([samples_so_far[k], kept[k]], axis=1) for k in kept}
+        steps_done += chunk
+
+        with open(checkpoint_path + ".tmp", "wb") as f:
+            pickle.dump({"state": jax.device_get(last_state),
+                         "samples": samples_so_far, "steps_done": steps_done}, f)
+        os.replace(checkpoint_path + ".tmp", checkpoint_path)
+        print(f"checkpoint @ {steps_done}/{total}")
+
     ef = mcmc.get_extra_fields()
     print("final step size per chain:", ef["adapt_state.step_size"][-1])
     print("mean tree depth:", np.log2(np.asarray(ef["num_steps"])+1).mean())
     print("divergences:", np.asarray(ef["diverging"]).sum())
 
-    inf_data = az.from_numpyro(mcmc, log_likelihood=False)
-    #print(az.summary(inf_data, var_names = ["^lambda*"], filter_vars="regex"))
-    print(az.summary(inf_data, var_names = ["^gamma*"], filter_vars="regex"))
+    inf_data = az.from_dict(posterior=samples_so_far)
+    print(az.summary(inf_data, var_names = ["^gamma_mean*"], filter_vars="regex"))
+    axes = az.plot_trace(inf_data, var_names = ["gamma_mean"], )
+    fig = axes.ravel()[0].figure
+    plt.savefig("trace.pdf", format="pdf", bbox_inches="tight")
+    plt.close(fig)
     print("TIME: ", time.time() - start)
-    #samples_so_far = mcmc.get_samples(group_by_chain=True)
     
-    #psi3 = np.asarray(jnp.mean(nn.softmax(samples_so_far["logits_psi"][0,:,3,:]), axis=0))
-    #psi8 = np.asarray(jnp.mean(nn.softmax(samples_so_far["logits_psi"][0,:,8,:]), axis=0))
-    #theta0 = np.asarray(jnp.mean(nn.softmax(samples_so_far["logits_theta"][0,:,0,:]), axis=0))
-    #theta36 = np.asarray(jnp.mean(nn.softmax(samples_so_far["logits_theta"][0,:,36,:]), axis=0))
-    #theta47 = np.asarray(jnp.mean(nn.softmax(samples_so_far["logits_theta"][0,:,47,:]), axis=0))
-    #theta168 = np.asarray(jnp.mean(nn.softmax(samples_so_far["logits_theta"][0,:,168,:]), axis=0))
-    
-    #from numpy.linalg import norm
-
-    #pairs = {
-    #    "psi3": psi3,
-    #    "psi8": psi8,
-    #}
-
-    #thetas = {
-    #    "theta0": theta0,
-    #    "theta36": theta36,
-    #    "theta47": theta47,
-    #    "theta168": theta168,
-    #}
-
-    #for psi_name, psi_vec in pairs.items():
-    #    for theta_name, theta_vec in thetas.items():
-    #        cos_sim = np.dot(psi_vec, theta_vec) / (norm(psi_vec) * norm(theta_vec))
-    #        print(f"cos_sim({psi_name}, {theta_name}) = {cos_sim:.4f}")    
-
-    #mcmc.print_summary()
-
-   # last_state = mcmc.last_state
-   # num_collected = checkpoint_interval
-   # with open(checkpoint_path, "wb") as f:
-  #      pickle.dump({"samples": samples_so_far, "last_state": last_state, "num_samples_collected": num_collected}, f)
-  #  print(f"Warmup done, saved checkpoint with {num_collected} samples")
-
-    # sample in chunks
-   # while num_collected < samples:
-   #     chunk = min(checkpoint_interval, samples - num_collected)
-   #     print(f"Sampling chunk of {chunk}, {num_collected}/{samples} collected so far...")
-   #     mcmc = MCMC(nuts_kernel, num_warmup=0, num_chains=num_chains, num_samples=chunk)
-   #     mcmc.post_warmup_state = last_state
-   #     mcmc.run(mcmc.post_warmup_state.rng_key, **model_args)
-   #     new_samples = mcmc.get_samples()
-   #     last_state = mcmc.last_state
-   #     num_collected += chunk
-   #     samples_so_far = {k: jnp.concatenate([samples_so_far[k], new_samples[k]], axis=0)
-   #                       for k in samples_so_far}
-   #     with open(checkpoint_path, "wb") as f:
-   #         pickle.dump({"samples": samples_so_far, "last_state": last_state, "num_samples_collected": num_collected}, f)
-   #     print(f"Saved checkpoint with {num_collected}/{samples} samples")
-    
-    #samples_so_far = {k: jnp.expand_dims(samples_so_far[k], axis=0) for k in samples_so_far}
-    #samples_so_far = {k: samples_so_far[k] for k in samples_so_far}
-    #samples_so_far["log_prob"] = log_prob
-#    print(samples_so_far["lambda"][0, :10, 0])
-   # samples_so_far = {k: np.asarray(samples_so_far[k]) for k in samples_so_far}
-#    subset_samples = {k: v.reshape(-1, *v.shape[2:]) for k,v in samples_so_far.items() if k in ["lambda", "gamma", "theta", "psi", "phi", "log_prob"]}
- #   return subset_samples
- #   return samples_so_far

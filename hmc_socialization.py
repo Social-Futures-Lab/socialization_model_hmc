@@ -29,6 +29,7 @@ def parse_args():
 if __name__ == "__main__":
     opt = parse_args()
     os.makedirs(opt.checkpoint_dir, exist_ok=True)
+    os.makedirs(opt.output_dir, exist_ok=True)
     numpyro.set_platform(opt.device)
     text_network = TextNetwork.load(opt.input_dir)
     samples = run_model(text_network,

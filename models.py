@@ -260,18 +260,14 @@ def model_no_topics_multinomial(
     # per-tgt-sub citation-propensity mean (the lambda analog)
     gamma_mean_tgt = numpyro.sample("gamma_mean", dist.Normal(0, 1).expand([num_tgt_subs]))
     gamma_mean_src = numpyro.sample("gamma_mean_src", dist.Normal(0, 1).expand([num_src_subs]))
+    gamma_var = numpyro.sample("gamma_var", dist.HalfNormal(1))
     # map each flat pair-slot to its owning tgt sub, so we can add that sub's mean
     # pair_owner[p] = which tgt sub owns flat slot p
     pair_owner = jnp.repeat(jnp.arange(num_tgt_subs), edges_per_sub_flat,
                             total_repeat_length=total_pairs)               # (total_pairs,)
     
-    tau_gamma = numpyro.sample("tau_gamma", dist.FoldedDistribution(dist.StudentT(loc=0, scale=0.5, df=2)))
-    lam_gamma = numpyro.sample("lam_gamma", dist.FoldedDistribution(dist.StudentT(loc=0, scale=1, df=5).expand([total_pairs])))
-    c2_gamma = numpyro.sample("c2_gamma", dist.InverseGamma(1, 1))
-    lam_tilde2_gamma = (c2_gamma * lam_gamma**2) / (c2_gamma + (tau_gamma**2) * (lam_gamma**2))
     z_gamma = numpyro.sample("z_gamma", dist.Normal(0.0, 1.0).expand([total_pairs]))
-    delta_gamma = z_gamma * jnp.sqrt(lam_tilde2_gamma) * tau_gamma
- #   delta_gamma = z_gamma * gamma_var
+    delta_gamma = z_gamma * gamma_var
     gammas = gamma_mean_tgt[pair_owner] + gamma_mean_src[pair_srcs]  + delta_gamma
   
     for edge_obj in doc_edge_lists:
@@ -624,6 +620,25 @@ def run_model(text_network, samples, warmup, num_chains, model_name, checkpoint_
     total = warmup + samples
     checkpoint_path = os.path.join(checkpoint_dir, "mcmc_checkpoint.pkl")
 
+    #if os.path.exists(checkpoint_path):
+    #    with open(checkpoint_path, "rb") as f:
+           # ck = pickle.load(f)
+     #   last_state, samples_so_far, steps_done = ck["state"], ck["samples"], ck["steps_done"]
+        # init purely for the side effect of vmapping kernel._sample_fn;
+        # the returned state is thrown away in favor of the checkpointed one
+      #  keys = jr.split(jr.PRNGKey(11), num_chains)
+      #  kernel.init(keys, warmup, model_args=(), model_kwargs=model_args)
+      #  print(f"Resuming at step {steps_done}/{total}")
+    #else:
+    #    keys = jr.split(jr.PRNGKey(11), num_chains)          # shape (4, 2)
+    #    last_state = kernel.init(keys, warmup, model_args=(), model_kwargs=model_args)
+    #    samples_so_far, steps_done = None, 0
+
+        # ONE object, reused across chunks (avoids per-chunk recompiles);
+        # num_warmup=warmup is the critical change vs your num_warmup=0
+    #mcmc = MCMC(kernel, num_warmup=warmup, num_samples=checkpoint_interval,
+    #            num_chains=num_chains, chain_method="vectorized")
+
     if os.path.exists(checkpoint_path):
         with open(checkpoint_path, "rb") as f:
             ck = pickle.load(f)
@@ -636,8 +651,6 @@ def run_model(text_network, samples, warmup, num_chains, model_name, checkpoint_
         last_state = jax.tree.map(lambda *xs: jnp.stack(xs), *states)
         samples_so_far, steps_done = None, 0
 
-    # ONE object, reused across chunks (avoids per-chunk recompiles);
-    # num_warmup=warmup is the critical change vs your num_warmup=0
     mcmc = MCMC(kernel, num_warmup=warmup, num_samples=checkpoint_interval,
                 num_chains=num_chains)
 
@@ -646,8 +659,7 @@ def run_model(text_network, samples, warmup, num_chains, model_name, checkpoint_
         if chunk != mcmc.num_samples:   # final partial chunk only
             mcmc = MCMC(kernel, num_warmup=warmup, num_samples=chunk, num_chains=num_chains)
         mcmc.post_warmup_state = last_state
-        mcmc.run(last_state.rng_key, **model_args,
-                 extra_fields=("num_steps", "diverging", "adapt_state.step_size"))
+        mcmc.run(last_state.rng_key, **model_args)
         last_state = mcmc.last_state
         new = mcmc.get_samples(group_by_chain=True)
 
@@ -665,11 +677,6 @@ def run_model(text_network, samples, warmup, num_chains, model_name, checkpoint_
         os.replace(checkpoint_path + ".tmp", checkpoint_path)
         print(f"checkpoint @ {steps_done}/{total}")
 
-    ef = mcmc.get_extra_fields()
-    print("final step size per chain:", ef["adapt_state.step_size"][-1])
-    print("mean tree depth:", np.log2(np.asarray(ef["num_steps"])+1).mean())
-    print("divergences:", np.asarray(ef["diverging"]).sum())
-
     inf_data = az.from_dict(posterior=samples_so_far)
     print(az.summary(inf_data, var_names = ["^gamma_mean*"], filter_vars="regex"))
     axes = az.plot_trace(inf_data, var_names = ["gamma_mean"], )
@@ -678,8 +685,8 @@ def run_model(text_network, samples, warmup, num_chains, model_name, checkpoint_
     plt.close(fig)
     print("TIME: ", time.time() - start)
     raw_samples = {
-        k: v for k, v in mcmc.get_samples(group_by_chain=True).items()
-        if k in ["gamma_mean", "gamma_var", "gamma"]
+        k: v for k, v in samples_so_far.items()
+        if k in ["gamma_mean", "gamma_var", "gamma_mean_src", "z_gamma", "lam_gamma", "tau_gamma", "c2_gamma"]
     }
     # Convert JAX arrays -> NumPy so they're safe to np.savez
     return {k: np.asarray(v) for k, v in raw_samples.items()}
